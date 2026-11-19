@@ -3,6 +3,8 @@ var CUR = null, installEvt = null;
 
 function loadLocal(){try{var s=localStorage.getItem('na_data');if(s)DATA=JSON.parse(s);}catch(e){}}
 function saveLocal(){try{localStorage.setItem('na_data',JSON.stringify(DATA));}catch(e){}}
+function getSaved(){try{return JSON.parse(localStorage.getItem('na_saved')||'{}');}catch(e){return {};}}
+function setSaved(o){try{localStorage.setItem('na_saved',JSON.stringify(o));}catch(e){}}
 function tm(t){if(!t)return '—';var d=new Date(t);return d.toLocaleDateString('en-GB')+' '+d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});}
 
 function setStatus(kind){
@@ -14,6 +16,7 @@ function setStatus(kind){
 
 async function sync(){
   setStatus('sync');
+  var ok=false;
   try{
     var r=await fetch(API+'?action=data&ver='+encodeURIComponent(DATA.ver||''),{cache:'no-store'});
     var j=await r.json();
@@ -22,8 +25,41 @@ async function sync(){
     else{DATA.at=Date.now();}
     saveLocal();
     if(!CUR||!DATA.sections.some(function(s){return s.id===CUR;}))CUR=DATA.sections.length?DATA.sections[0].id:null;
-    drawChips();render();setStatus('ok');
+    drawChips();render();setStatus('ok');ok=true;
   }catch(e){setStatus('off');if(!DATA.items.length)render();}
+  if(ok)autoRefresh();
+}
+
+/* تحديث الملفات المحفوظة أوفلاين تلقائياً + حذف الملفات القديمة */
+var BUSY=false;
+async function autoRefresh(){
+  if(BUSY||!DATA.items.length)return;BUSY=true;
+  try{
+    var s=getSaved(),cur={};DATA.items.forEach(function(a){cur[a.id]=a;});
+    for(var id in s){
+      var a=cur[id];
+      if(!a){delete s[id];continue;}
+      try{
+        await ensureFile(a.fileId,'pdf');
+        for(var k=0;k<a.images.length;k++)await ensureFile(a.images[k],'full');
+        s[id]={f:a.fileId,i:a.images.slice()};
+      }catch(e){}
+    }
+    setSaved(s);
+    await purge();
+    hydrate();
+  }catch(e){}
+  BUSY=false;
+}
+async function purge(){
+  var kp={},kf={},kt={};
+  DATA.items.forEach(function(a){kp[a.fileId]=1;(a.images||[]).forEach(function(i){kf[i]=1;kt[i]=1;});});
+  var c=await caches.open(FILES),ks=await c.keys();
+  for(var n=0;n<ks.length;n++){
+    var p=ks[n].url.replace('https://offline.local/','').split('/'),kind=p[0],id=p.slice(1).join('/');
+    var m=kind==='pdf'?kp:(kind==='full'?kf:kt);
+    if(!m[id])await c.delete(ks[n]);
+  }
 }
 
 function drawChips(){
@@ -79,10 +115,11 @@ async function hydrate(){
 }
 
 async function toggleOffline(i){
-  var a=DATA.items[i],btn=$('off_'+i);
+  var a=DATA.items[i],btn=$('off_'+i),s=getSaved();
   if(btn.dataset.s==='1'){
     await dropFile(a.fileId,'pdf');
     for(var k=0;k<a.images.length;k++)await dropFile(a.images[k],'full');
+    delete s[a.id];setSaved(s);
     btn.dataset.s='0';btn.textContent='⬇ حفظ أوفلاين';toast('تمت الإزالة من الجهاز');return;
   }
   if(!navigator.onLine){toast('لازم تكون متصل بالإنترنت لتنزيل الملف');return;}
@@ -90,6 +127,7 @@ async function toggleOffline(i){
   try{
     await ensureFile(a.fileId,'pdf');
     for(var k2=0;k2<a.images.length;k2++)await ensureFile(a.images[k2],'full');
+    s[a.id]={f:a.fileId,i:a.images.slice()};setSaved(s);
     btn.dataset.s='1';btn.textContent='✔ محفوظ — إزالة';toast('تم الحفظ، الملف متاح بدون إنترنت');
   }catch(e){btn.textContent='⬇ حفظ أوفلاين';toast('تعذّر التنزيل، حاول مرة ثانية');}
   btn.disabled=false;
